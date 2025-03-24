@@ -1,0 +1,109 @@
+alias: SMA Battery Charging Speed Control
+description: Controls battery charging speed based on SOC and mode
+trigger:
+  - platform: time_pattern
+    minutes: "/5"
+  - platform: state
+    entity_id: input_select.byd_akkusteuerung
+  - platform: state
+    entity_id: sensor.sma_wechselrichter_battery_soc_total
+
+variables:
+  soc: "{{ states('sensor.sma_wechselrichter_battery_soc_total') | float }}"
+  charging_mode: "{{ states('input_select.byd_akkusteuerung') }}"
+  max_power: "{{ states('input_number.akkusteuerung_ladestaerke_soll') | int }}"
+
+conditions:
+  - condition: state
+    entity_id: input_select.byd_akkusteuerung
+    state: BYD Akku schnell Laden
+
+action:
+  - choose:
+      # SOC < 70%: Full power
+      - conditions:
+          - condition: template
+            value_template: "{{ soc < 70 }}"
+        sequence:
+          - service: logbook.log
+            data:
+              name: Battery Charging Speed
+              message: "Setting full power ({{ max_power }}W) for SOC below 70%"
+          - service: modbus.write_register
+            data:
+              hub: sma_solar
+              address: 40149
+              slave: 3
+              value:
+                - 65535
+                - "{{ 65535 - max_power }}"
+
+      # SOC 70-80%: 3000W
+      - conditions:
+          - condition: template
+            value_template: "{{ soc >= 70 and soc < 80 }}"
+        sequence:
+          - service: logbook.log
+            data:
+              name: Battery Charging Speed
+              message: "Setting 3000W for SOC between 70% and 80%"
+          - service: modbus.write_register
+            data:
+              hub: sma_solar
+              address: 40149
+              slave: 3
+              value:
+                - 65535
+                - 62535
+
+      # SOC 80-90%: 2000W
+      - conditions:
+          - condition: template
+            value_template: "{{ soc >= 80 and soc < 90 }}"
+        sequence:
+          - service: logbook.log
+            data:
+              name: Battery Charging Speed
+              message: "Setting 2000W for SOC between 80% and 90%"
+          - service: modbus.write_register
+            data:
+              hub: sma_solar
+              address: 40149
+              slave: 3
+              value:
+                - 65535
+                - 63535
+
+      # SOC 90-95%: 1000W
+      - conditions:
+          - condition: template
+            value_template: "{{ soc >= 90 and soc < 95 }}"
+        sequence:
+          - service: logbook.log
+            data:
+              name: Battery Charging Speed
+              message: "Setting 1000W for SOC between 90% and 95%"
+          - service: modbus.write_register
+            data:
+              hub: sma_solar
+              address: 40149
+              slave: 3
+              value:
+                - 65535
+                - 64535
+
+      # SOC >= 95%: Switch to normal mode
+      - conditions:
+          - condition: template
+            value_template: "{{ soc >= 95 }}"
+        sequence:
+          - service: logbook.log
+            data:
+              name: Battery Charging Speed
+              message: "SOC reached 95%, switching to normal mode"
+          - service: input_select.select_option
+            data:
+              entity_id: input_select.byd_akkusteuerung
+              option: BYD Akku Normalbetrieb
+
+mode: single

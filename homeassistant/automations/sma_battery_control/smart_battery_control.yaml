@@ -1,0 +1,510 @@
+alias: "Smart Battery Control"
+description: "Intelligent battery control based on price predictions and state of charge"
+trigger:
+  - platform: time_pattern
+    minutes: /5
+  - platform: state
+    entity_id: sensor.aloa_electricity_price
+  - platform: state
+    entity_id: sensor.sma_wechselrichter_battery_soc_total
+  - platform: state
+    entity_id: sensor.sma_wechselrichter_pv_power
+  - platform: state
+    entity_id: binary_sensor.go_echarger_car_connected
+  - platform: state
+    entity_id: sensor.go_echarger_charging_state
+  - platform: state
+    entity_id: sensor.sma_wechselrichter_battery_power
+  - platform: state
+    entity_id: sensor.sma_wechselrichter_battery_temperature
+  - platform: state
+    entity_id: sensor.sma_wechselrichter_battery_voltage
+  - platform: state
+    entity_id: sensor.sma_wechselrichter_battery_current
+  - platform: state
+    entity_id: input_select.byd_akkusteuerung
+  - platform: state
+    entity_id: input_number.high_price_threshold
+  - platform: state
+    entity_id: input_text.start_high_price_time
+  - platform: state
+    entity_id: input_text.cost_prediction_charging_start
+  - platform: state
+    entity_id: input_text.cheapest_charging_start
+  - platform: state
+    entity_id: sensor.emergency_loading_status
+  - platform: state
+    entity_id: sensor.emergency_loading_battery
+
+variables:
+  current_hour: >
+    {% set hour = now().hour %}
+    {{ hour if hour is not none else 0 }}
+  current_month: >
+    {% set month = now().month %}
+    {{ month if month is not none else 1 }}
+  is_winter: >
+    {% set month = now().month %}
+    {{ month >= 10 or month <= 3 if month is not none else false }}
+  is_summer: >
+    {% set month = now().month %}
+    {{ month >= 4 and month <= 9 if month is not none else false }}
+  is_daytime: >
+    {% set hour = now().hour %}
+    {% if is_winter %}
+      {{ hour >= 8 and hour < 18 if hour is not none else false }}
+    {% else %}
+      {{ hour >= 6 and hour < 22 if hour is not none else false }}
+    {% endif %}
+  is_peak_hour: >
+    {% set hour = now().hour %}
+    {% if is_winter %}
+      {{ hour >= 16 and hour < 19 if hour is not none else false }}
+    {% else %}
+      {{ hour >= 17 and hour < 20 if hour is not none else false }}
+    {% endif %}
+  is_off_peak: >
+    {% set hour = now().hour %}
+    {% if is_winter %}
+      {{ hour < 8 or hour >= 18 if hour is not none else false }}
+    {% else %}
+      {{ hour < 6 or hour >= 22 if hour is not none else false }}
+    {% endif %}
+  high_price_threshold: >
+    {% set raw_value = states('input_number.high_price_threshold') | default('0') %}
+    {% set clean_value = raw_value | string | replace(' ', '') | replace('\n', '') | replace('\r', '') | replace('\t', '') %}
+    {% set base_threshold = clean_value | float if clean_value != 'unknown' and clean_value != '' and clean_value is not none else 0 %}
+    {% if is_winter %}
+      {% set threshold = base_threshold * 1.2 %}
+    {% else %}
+      {% set threshold = base_threshold * 0.9 %}
+    {% endif %}
+    {{ threshold | round(2) }}
+  soc: >
+    {% set raw_value = states('sensor.sma_wechselrichter_battery_soc_total') | default('0') %}
+    {% set clean_value = raw_value | string | replace(' ', '') | replace('\n', '') | replace('\r', '') | replace('\t', '') %}
+    {% set soc_value = clean_value | float if clean_value != 'unknown' and clean_value != '' and clean_value is not none else 0 %}
+    {{ soc_value | round(1) }}
+  current_price: >
+    {% set raw_value = states('sensor.aloa_electricity_price') | default('0') %}
+    {% set clean_value = raw_value | string | replace(' ', '') | replace('\n', '') | replace('\r', '') | replace('\t', '') %}
+    {% set price = clean_value | float if clean_value != 'unknown' and clean_value != '' and clean_value is not none else 0 %}
+    {{ price | round(2) }}
+  car_charging: >
+    {% set car_state = is_state('binary_sensor.go_echarger_car_connected', 'on') | default(false) %}
+    {% set charging_state = is_state('sensor.go_echarger_charging_state', 'Charging') | default(false) %}
+    {{ car_state and charging_state if car_state is not none and charging_state is not none else false }}
+  car_connected: >
+    {% set state = is_state('binary_sensor.go_echarger_car_connected', 'on') | default(false) %}
+    {{ state if state is not none else false }}
+  car_charging_state: >
+    {% set state = states('sensor.go_echarger_charging_state') | default('Unknown') %}
+    {{ state if state is not none else 'Unknown' }}
+  car_charging_power: >
+    {% set raw_value = states('sensor.go_echarger_power') | default('0') %}
+    {% set clean_value = raw_value | string | replace(' ', '') | replace('\n', '') | replace('\r', '') | replace('\t', '') %}
+    {% if clean_value == 'unknown' or clean_value == '' or clean_value is none %}
+      {{ 0 }}
+    {% else %}
+      {{ (clean_value | float) | round(1) }}
+    {% endif %}
+  battery_power: >
+    {% set raw_value = states('sensor.sma_wechselrichter_battery_power') | default('0') %}
+    {% set clean_value = raw_value | string | replace(' ', '') | replace('\n', '') | replace('\r', '') | replace('\t', '') %}
+    {% if clean_value == 'unknown' or clean_value == '' or clean_value is none %}
+      {{ 0 }}
+    {% else %}
+      {{ (clean_value | float) | round(1) }}
+    {% endif %}
+  is_battery_discharging: >
+    {% set raw_value = states('sensor.sma_wechselrichter_battery_power') | default('0') %}
+    {% set clean_value = raw_value | string | replace(' ', '') | replace('\n', '') | replace('\r', '') | replace('\t', '') %}
+    {% if clean_value == 'unknown' or clean_value == '' or clean_value is none %}
+      {{ false }}
+    {% else %}
+      {{ (clean_value | float) < -100 }}
+    {% endif %}
+  battery_temperature: >
+    {% set raw_value = states('sensor.sma_wechselrichter_battery_temperature') | default('0') %}
+    {% set clean_value = raw_value | string | replace(' ', '') | replace('\n', '') | replace('\r', '') | replace('\t', '') %}
+    {% if clean_value == 'unknown' or clean_value == '' or clean_value is none %}
+      {{ 0 }}
+    {% else %}
+      {{ (clean_value | float) | round(1) }}
+    {% endif %}
+  battery_voltage: >
+    {% set raw_value = states('sensor.sma_wechselrichter_battery_voltage') | default('0') %}
+    {% set clean_value = raw_value | string | replace(' ', '') | replace('\n', '') | replace('\r', '') | replace('\t', '') %}
+    {% if clean_value == 'unknown' or clean_value == '' or clean_value is none %}
+      {{ 0 }}
+    {% else %}
+      {{ (clean_value | float) | round(1) }}
+    {% endif %}
+  battery_current: >
+    {% set raw_value = states('sensor.sma_wechselrichter_battery_current') | default('0') %}
+    {% set clean_value = raw_value | string | replace(' ', '') | replace('\n', '') | replace('\r', '') | replace('\t', '') %}
+    {% if clean_value == 'unknown' or clean_value == '' or clean_value is none %}
+      {{ 0 }}
+    {% else %}
+      {{ (clean_value | float) | round(1) }}
+    {% endif %}
+  battery_health: >
+    {% set temp = battery_temperature | float %}
+    {% if temp > 45 %}
+      "critical"
+    {% elif temp > 35 %}
+      "warning"
+    {% else %}
+      "normal"
+    {% endif %}
+  battery_safety_check: >
+    {% set health = battery_health %}
+    {% set voltage = battery_voltage | float %}
+    {% set current = battery_current | float %}
+    {{ health == "normal" and voltage > 0 and current is not none }}
+  current_mode: >
+    {% set mode = states('input_select.byd_akkusteuerung') | default('BYD Akku Normalbetrieb') %}
+    {{ mode if mode is not none else 'BYD Akku Normalbetrieb' }}
+  pv_power: >
+    {% set raw_value = states('sensor.sma_wechselrichter_pv_power') | default('0') %}
+    {% set clean_value = raw_value | string | replace(' ', '') | replace('\n', '') | replace('\r', '') | replace('\t', '') %}
+    {% if clean_value == 'unknown' or clean_value == '' or clean_value is none %}
+      {{ 0 }}
+    {% else %}
+      {{ (clean_value | float) | round(1) }}
+    {% endif %}
+  is_solar_producing: >
+    {% set raw_value = states('sensor.sma_wechselrichter_pv_power') | default('0') %}
+    {% set clean_value = raw_value | string | replace(' ', '') | replace('\n', '') | replace('\r', '') | replace('\t', '') %}
+    {% if clean_value == 'unknown' or clean_value == '' or clean_value is none %}
+      {{ false }}
+    {% else %}
+      {{ (clean_value | float) > 100 }}
+    {% endif %}
+  emergency_loading_status: >
+    {% set status = states('sensor.emergency_loading_status') | default('Disabled') %}
+    {{ status if status is not none else 'Disabled' }}
+  emergency_loading_battery: >
+    {% set status = states('sensor.emergency_loading_battery') | default('Disabled') %}
+    {{ status if status is not none else 'Disabled' }}
+  is_high_price_period: >
+    {% set raw_value = states('sensor.aloa_electricity_price') | default('0') %}
+    {% set clean_value = raw_value | string | replace(' ', '') | replace('\n', '') | replace('\r', '') | replace('\t', '') %}
+    {% set current = clean_value | float if clean_value != 'unknown' and clean_value != '' and clean_value is not none else 0 %}
+    {% set threshold = high_price_threshold | float %}
+    {{ current > threshold }}
+  cheapest_charging_start: >
+    {% set start_time = states('input_text.cheapest_charging_start') | default('00:00') %}
+    {% set clean_time = start_time | string | replace(' ', '') | replace('\n', '') | replace('\r', '') | replace('\t', '') %}
+    {{ clean_time if clean_time != 'unknown' and clean_time != '' and clean_time is not none else '00:00' }}
+  is_cheap_charging_time: >
+    {% set current = now().strftime('%H:%M') %}
+    {% set cheapest = cheapest_charging_start %}
+    {{ current >= cheapest if current is not none and cheapest is not none else false }}
+  start_high_price_time: >
+    {% set start_time = states('input_text.start_high_price_time') | default('Not in Critical Range') %}
+    {% set clean_time = start_time | string | replace(' ', '') | replace('\n', '') | replace('\r', '') | replace('\t', '') %}
+    {{ clean_time if clean_time != 'unknown' and clean_time != '' and clean_time is not none else 'Not in Critical Range' }}
+  end_high_price_time: >
+    {% set end_time = states('input_text.end_high_price_time') | default('Not in Critical Range') %}
+    {% set clean_time = end_time | string | replace(' ', '') | replace('\n', '') | replace('\r', '') | replace('\t', '') %}
+    {{ clean_time if clean_time != 'unknown' and clean_time != '' and clean_time is not none else 'Not in Critical Range' }}
+  cost_prediction_start: >
+    {% set pred_time = states('input_text.cost_prediction_charging_start') | default('Not in Critical Range') %}
+    {% set clean_time = pred_time | string | replace(' ', '') | replace('\n', '') | replace('\r', '') | replace('\t', '') %}
+    {{ clean_time if clean_time != 'unknown' and clean_time != '' and clean_time is not none else 'Not in Critical Range' }}
+  is_high_price_period_active: >
+    {% set current = now().strftime('%Y-%m-%dT%H:%M:%S') %}
+    {% set start = start_high_price_time %}
+    {% set end = end_high_price_time %}
+    {{ current >= start and current <= end if start != 'Not in Critical Range' and end != 'Not in Critical Range' else false }}
+  is_optimal_charging_time: >
+    {% set current = now().strftime('%Y-%m-%dT%H:%M:%S') %}
+    {% set optimal = cost_prediction_start %}
+    {{ current >= optimal if optimal != 'Not in Critical Range' else false }}
+  max_power: >
+    {% set power = states('input_number.akkusteuerung_ladestaerke_soll') | default('0') %}
+    {% set clean_value = power | string | replace(' ', '') | replace('\n', '') | replace('\r', '') | replace('\t', '') %}
+    {{ clean_value | int if clean_value != 'unknown' and clean_value != '' and clean_value is not none else 0 }}
+  charging_power: >
+    {% set soc_value = soc | float %}
+    {% set max_power_value = max_power | int %}
+    {% if soc_value < 70 %}
+      {{ max_power_value }}
+    {% elif soc_value >= 70 and soc_value < 80 %}
+      {{ 3000 }}
+    {% elif soc_value >= 80 and soc_value < 90 %}
+      {{ 2000 }}
+    {% elif soc_value >= 90 and soc_value < 95 %}
+      {{ 1000 }}
+    {% else %}
+      {{ 0 }}
+    {% endif %}
+  discharge_power: >
+    {% set power = states('input_number.akkusteuerung_entladestaerke_soll') | default('0') %}
+    {% set clean_value = power | string | replace(' ', '') | replace('\n', '') | replace('\r', '') | replace('\t', '') %}
+    {{ clean_value | int if clean_value != 'unknown' and clean_value != '' and clean_value is not none else 0 }}
+
+conditions: []
+
+action:
+  - choose:
+      # Priority 1: Car is charging - ensure battery is not discharging
+      - conditions:
+          - condition: and
+            conditions:
+              - condition: template
+                value_template: "{{ car_charging }}"
+              - condition: template
+                value_template: "{{ is_battery_discharging }}"
+              - condition: template
+                value_template: "{{ battery_safety_check }}"
+        sequence:
+          - service: logbook.log
+            data:
+              name: "Battery Control"
+              message: >
+                Car is charging and battery is discharging - switching to normal operation to prevent battery discharge.
+                Car State: Connected ({{ car_connected }}) and Charging ({{ car_charging_state }}),
+                Car Power: {{ car_charging_power }}W,
+                Battery Power: {{ battery_power }}W,
+                Battery Health: {{ battery_health }}, Voltage: {{ battery_voltage }}V, Current: {{ battery_current }}A,
+                Current price: {{ current_price }}c/kWh, SOC: {{ soc }}%,
+                PV Power: {{ pv_power }}W,
+                Time: {{ current_hour }}:00, Season: {{ 'Winter' if is_winter else 'Summer' }},
+                Charging Power: {{ charging_power }}W, Max Power: {{ max_power }}W
+          - service: input_select.select_option
+            data:
+              entity_id: input_select.byd_akkusteuerung
+              option: BYD Akku Normalbetrieb
+
+      # Priority 2: Car is charging - maintain normal operation
+      - conditions:
+          - condition: and
+            conditions:
+              - condition: template
+                value_template: "{{ car_charging }}"
+              - condition: template
+                value_template: "{{ battery_safety_check }}"
+        sequence:
+          - service: logbook.log
+            data:
+              name: "Battery Control"
+              message: >
+                Car is charging - ensuring normal operation.
+                Car State: Connected ({{ car_connected }}) and Charging ({{ car_charging_state }}),
+                Car Power: {{ car_charging_power }}W,
+                Battery Power: {{ battery_power }}W,
+                Battery Health: {{ battery_health }}, Voltage: {{ battery_voltage }}V, Current: {{ battery_current }}A,
+                Current price: {{ current_price }}c/kWh, SOC: {{ soc }}%,
+                PV Power: {{ pv_power }}W,
+                Time: {{ current_hour }}:00, Season: {{ 'Winter' if is_winter else 'Summer' }}
+          - service: input_select.select_option
+            data:
+              entity_id: input_select.byd_akkusteuerung
+              option: BYD Akku Normalbetrieb
+
+      # Priority 3: Car is connected but not charging - prepare for charging
+      - conditions:
+          - condition: and
+            conditions:
+              - condition: template
+                value_template: "{{ car_connected and not car_charging }}"
+              - condition: template
+                value_template: "{{ car_charging_state != 'Charging' }}"
+              - condition: template
+                value_template: "{{ battery_safety_check }}"
+        sequence:
+          - service: logbook.log
+            data:
+              name: "Battery Control"
+              message: >
+                Car connected but not charging - preparing for charging.
+                Car State: {{ car_charging_state }}, Car Power: {{ car_charging_power }}W,
+                Battery Power: {{ battery_power }}W,
+                Battery Health: {{ battery_health }}, Voltage: {{ battery_voltage }}V, Current: {{ battery_current }}A,
+                Current price: {{ current_price }}c/kWh, SOC: {{ soc }}%,
+                PV Power: {{ pv_power }}W,
+                Time: {{ current_hour }}:00, Season: {{ 'Winter' if is_winter else 'Summer' }}
+          - service: input_select.select_option
+            data:
+              entity_id: input_select.byd_akkusteuerung
+              option: BYD Akku Normalbetrieb
+
+      # Priority 4: High SOC (>95%) - switch to normal operation
+      - conditions:
+          - condition: and
+            conditions:
+              - condition: template
+                value_template: "{{ soc > 95 }}"
+              - condition: template
+                value_template: "{{ not car_charging }}"
+              - condition: template
+                value_template: "{{ battery_safety_check }}"
+              - condition: not
+                conditions:
+                  - condition: state
+                    entity_id: input_select.byd_akkusteuerung
+                    state: BYD Akku Normalbetrieb
+        sequence:
+          - service: logbook.log
+            data:
+              name: "Battery Control"
+              message: >
+                SOC above 95% - switching to normal operation.
+                Car State: {{ car_charging_state }}, Car Power: {{ car_charging_power }}W,
+                Battery Power: {{ battery_power }}W,
+                Battery Health: {{ battery_health }}, Voltage: {{ battery_voltage }}V, Current: {{ battery_current }}A,
+                Current price: {{ current_price }}c/kWh, SOC: {{ soc }}%,
+                PV Power: {{ pv_power }}W,
+                Time: {{ current_hour }}:00, Season: {{ 'Winter' if is_winter else 'Summer' }}
+          - service: input_select.select_option
+            data:
+              entity_id: input_select.byd_akkusteuerung
+              option: BYD Akku Normalbetrieb
+
+      # Priority 5: Emergency charging needed (low SOC + high prices)
+      - conditions:
+          - condition: and
+            conditions:
+              - condition: template
+                value_template: "{{ soc < 40 }}"
+              - condition: template
+                value_template: "{{ emergency_loading_battery == 'Enabled' }}"
+              - condition: template
+                value_template: "{{ emergency_loading_status == 'Enabled' }}"
+              - condition: template
+                value_template: "{{ is_high_price_period_active }}"
+              - condition: template
+                value_template: "{{ not is_solar_producing }}"
+              - condition: template
+                value_template: "{{ not car_charging }}"
+              - condition: template
+                value_template: "{{ battery_safety_check }}"
+        sequence:
+          - service: logbook.log
+            data:
+              name: "Battery Control"
+              message: >
+                Emergency charging needed - SOC low ({{ soc }}%) and high price period active.
+                Car State: {{ car_charging_state }}, Car Power: {{ car_charging_power }}W,
+                Battery Power: {{ battery_power }}W,
+                Battery Health: {{ battery_health }}, Voltage: {{ battery_voltage }}V, Current: {{ battery_current }}A,
+                Current price: {{ current_price }}c/kWh,
+                PV Power: {{ pv_power }}W,
+                Time: {{ current_hour }}:00, Season: {{ 'Winter' if is_winter else 'Summer' }},
+                High Price Period: {{ start_high_price_time }} to {{ end_high_price_time }},
+                Optimal Charging Start: {{ cost_prediction_start }},
+                Charging Power: {{ charging_power }}W, Max Power: {{ max_power }}W
+          - service: input_select.select_option
+            data:
+              entity_id: input_select.byd_akkusteuerung
+              option: BYD Akku schnell Laden
+
+      # Priority 6: High price period - pause battery
+      - conditions:
+          - condition: and
+            conditions:
+              - condition: template
+                value_template: "{{ is_high_price_period_active }}"
+              - condition: template
+                value_template: "{{ soc >= 40 }}"
+              - condition: template
+                value_template: "{{ emergency_loading_status == 'Enabled' }}"
+              - condition: template
+                value_template: "{{ not car_charging }}"
+              - condition: template
+                value_template: "{{ battery_safety_check }}"
+              - condition: template
+                value_template: "{{ not is_optimal_charging_time }}"
+              - condition: not
+                conditions:
+                  - condition: state
+                    entity_id: input_select.byd_akkusteuerung
+                    state: BYD Akku Pausieren
+        sequence:
+          - service: logbook.log
+            data:
+              name: "Battery Control"
+              message: >
+                Pausing battery - high price period active.
+                Car State: {{ car_charging_state }}, Car Power: {{ car_charging_power }}W,
+                Battery Power: {{ battery_power }}W,
+                Battery Health: {{ battery_health }}, Voltage: {{ battery_voltage }}V, Current: {{ battery_current }}A,
+                Current price: {{ current_price }}c/kWh,
+                PV Power: {{ pv_power }}W,
+                Time: {{ current_hour }}:00, Season: {{ 'Winter' if is_winter else 'Summer' }},
+                High Price Period: {{ start_high_price_time }} to {{ end_high_price_time }},
+                Optimal Charging Start: {{ cost_prediction_start }}
+          - service: input_select.select_option
+            data:
+              entity_id: input_select.byd_akkusteuerung
+              option: BYD Akku Pausieren
+
+      # Priority 7: Optimal charging time - prepare for charging
+      - conditions:
+          - condition: and
+            conditions:
+              - condition: template
+                value_template: "{{ is_optimal_charging_time }}"
+              - condition: template
+                value_template: "{{ not car_charging }}"
+              - condition: template
+                value_template: "{{ battery_safety_check }}"
+              - condition: template
+                value_template: "{{ soc < 95 }}"
+              - condition: not
+                conditions:
+                  - condition: state
+                    entity_id: input_select.byd_akkusteuerung
+                    state: BYD Akku Normalbetrieb
+        sequence:
+          - service: logbook.log
+            data:
+              name: "Battery Control"
+              message: >
+                Switching to normal operation - optimal charging time detected.
+                Car State: {{ car_charging_state }}, Car Power: {{ car_charging_power }}W,
+                Battery Power: {{ battery_power }}W,
+                Battery Health: {{ battery_health }}, Voltage: {{ battery_voltage }}V, Current: {{ battery_current }}A,
+                Current price: {{ current_price }}c/kWh, SOC: {{ soc }}%,
+                PV Power: {{ pv_power }}W,
+                Time: {{ current_hour }}:00, Season: {{ 'Winter' if is_winter else 'Summer' }},
+                High Price Period: {{ start_high_price_time }} to {{ end_high_price_time }},
+                Optimal Charging Start: {{ cost_prediction_start }}
+          - service: input_select.select_option
+            data:
+              entity_id: input_select.byd_akkusteuerung
+              option: BYD Akku Normalbetrieb
+
+      # Default: Normal operation if no other conditions met
+      - conditions:
+          - condition: and
+            conditions:
+              - condition: not
+                conditions:
+                  - condition: state
+                    entity_id: input_select.byd_akkusteuerung
+                    state: BYD Akku Normalbetrieb
+              - condition: template
+                value_template: "{{ not car_charging }}"
+              - condition: template
+                value_template: "{{ battery_safety_check }}"
+        sequence:
+          - service: logbook.log
+            data:
+              name: "Battery Control"
+              message: >
+                No special conditions - switching to normal operation.
+                Car State: {{ car_charging_state }}, Car Power: {{ car_charging_power }}W,
+                Battery Power: {{ battery_power }}W,
+                Battery Health: {{ battery_health }}, Voltage: {{ battery_voltage }}V, Current: {{ battery_current }}A,
+                Current price: {{ current_price }}c/kWh, SOC: {{ soc }}%,
+                PV Power: {{ pv_power }}W,
+                Time: {{ current_hour }}:00, Season: {{ 'Winter' if is_winter else 'Summer' }}
+          - service: input_select.select_option
+            data:
+              entity_id: input_select.byd_akkusteuerung
+              option: BYD Akku Normalbetrieb
+
+mode: single

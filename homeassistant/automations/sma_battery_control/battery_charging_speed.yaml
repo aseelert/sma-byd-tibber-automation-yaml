@@ -1,0 +1,125 @@
+alias: "Battery Charging Speed Control"
+description: "Controls battery charging speed based on SOC and mode"
+trigger:
+  - minutes: /5
+    trigger: time_pattern
+  - entity_id: input_select.byd_akkusteuerung
+    trigger: state
+  - entity_id: sensor.sma_wechselrichter_battery_soc_total
+    trigger: state
+conditions:
+  - condition: state
+    entity_id: input_select.byd_akkusteuerung
+    state: BYD Akku schnell Laden
+variables:
+  soc: >
+    {% set raw_value = states('sensor.sma_wechselrichter_battery_soc_total') | default('0') %}
+    {% set clean_value = raw_value | string | replace(' ', '') | replace('\n', '') | replace('\r', '') | replace('\t', '') %}
+    {% set soc_value = clean_value | float if clean_value != 'unknown' and clean_value != '' and clean_value is not none else 0 %}
+    {{ soc_value | round(1) }}
+  max_power: >
+    {% set power = states('input_number.akkusteuerung_ladestaerke_soll') | default('0') %}
+    {% set clean_value = power | string | replace(' ', '') | replace('\n', '') | replace('\r', '') | replace('\t', '') %}
+    {{ clean_value | int if clean_value != 'unknown' and clean_value != '' and clean_value is not none else 0 }}
+  current_power: >
+    {% set raw_value = states('sensor.sma_wechselrichter_battery_power') | default('0') %}
+    {% set clean_value = raw_value | string | replace(' ', '') | replace('\n', '') | replace('\r', '') | replace('\t', '') %}
+    {% if clean_value == 'unknown' or clean_value == '' or clean_value is none %}
+      {{ 0 }}
+    {% else %}
+      {{ (clean_value | float) | round(1) }}
+    {% endif %}
+action:
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ soc < 70 }}"
+        sequence:
+          - service: logbook.log
+            data:
+              name: "Battery Charging Speed"
+              message: >-
+                Setting full power ({{ max_power }}W) for SOC below 70%.
+                Current SOC: {{ soc }}%, Current Power: {{ current_power }}W,
+                Max Power: {{ max_power }}W, Battery Health: {{ states('sensor.sma_wechselrichter_battery_health') | default('Unknown') }}
+          - service: modbus.write_register
+            data:
+              hub: sma_solar
+              address: 40149
+              slave: 3
+              value:
+                - 65535
+                - "{{ 65535 - max_power }}"
+      - conditions:
+          - condition: template
+            value_template: "{{ soc >= 70 and soc < 80 }}"
+        sequence:
+          - service: logbook.log
+            data:
+              name: "Battery Charging Speed"
+              message: >-
+                Setting 3000W for SOC between 70% and 80%.
+                Current SOC: {{ soc }}%, Current Power: {{ current_power }}W,
+                Battery Health: {{ states('sensor.sma_wechselrichter_battery_health') | default('Unknown') }}
+          - service: modbus.write_register
+            data:
+              hub: sma_solar
+              address: 40149
+              slave: 3
+              value:
+                - 65535
+                - 62535
+      - conditions:
+          - condition: template
+            value_template: "{{ soc >= 80 and soc < 90 }}"
+        sequence:
+          - service: logbook.log
+            data:
+              name: "Battery Charging Speed"
+              message: >-
+                Setting 2000W for SOC between 80% and 90%.
+                Current SOC: {{ soc }}%, Current Power: {{ current_power }}W,
+                Battery Health: {{ states('sensor.sma_wechselrichter_battery_health') | default('Unknown') }}
+          - service: modbus.write_register
+            data:
+              hub: sma_solar
+              address: 40149
+              slave: 3
+              value:
+                - 65535
+                - 63535
+      - conditions:
+          - condition: template
+            value_template: "{{ soc >= 90 and soc < 95 }}"
+        sequence:
+          - service: logbook.log
+            data:
+              name: "Battery Charging Speed"
+              message: >-
+                Setting 1000W for SOC between 90% and 95%.
+                Current SOC: {{ soc }}%, Current Power: {{ current_power }}W,
+                Battery Health: {{ states('sensor.sma_wechselrichter_battery_health') | default('Unknown') }}
+          - service: modbus.write_register
+            data:
+              hub: sma_solar
+              address: 40149
+              slave: 3
+              value:
+                - 65535
+                - 64535
+      - conditions:
+          - condition: template
+            value_template: "{{ soc >= 95 }}"
+        sequence:
+          - service: logbook.log
+            data:
+              name: "Battery Charging Speed"
+              message: >-
+                SOC reached 95%, switching to normal mode.
+                Current SOC: {{ soc }}%, Current Power: {{ current_power }}W,
+                Battery Health: {{ states('sensor.sma_wechselrichter_battery_health') | default('Unknown') }}
+          - service: input_select.select_option
+            data:
+              entity_id: input_select.byd_akkusteuerung
+              option: BYD Akku Normalbetrieb
+mode: single
