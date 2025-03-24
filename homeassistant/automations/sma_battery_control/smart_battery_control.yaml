@@ -249,36 +249,7 @@ conditions: []
 
 action:
   - choose:
-      # Priority 1: Car is charging - ensure battery is not discharging
-      - conditions:
-          - condition: and
-            conditions:
-              - condition: template
-                value_template: "{{ car_charging }}"
-              - condition: template
-                value_template: "{{ is_battery_discharging }}"
-              - condition: template
-                value_template: "{{ battery_safety_check }}"
-        sequence:
-          - service: logbook.log
-            data:
-              name: "Battery Control"
-              message: >
-                Car is charging and battery is discharging - switching to normal operation to prevent battery discharge.
-                Car State: Connected ({{ car_connected }}) and Charging ({{ car_charging_state }}),
-                Car Power: {{ car_charging_power }}W,
-                Battery Power: {{ battery_power }}W,
-                Battery Health: {{ battery_health }}, Voltage: {{ battery_voltage }}V, Current: {{ battery_current }}A,
-                Current price: {{ current_price }}c/kWh, SOC: {{ soc }}%,
-                PV Power: {{ pv_power }}W,
-                Time: {{ current_hour }}:00, Season: {{ 'Winter' if is_winter else 'Summer' }},
-                Charging Power: {{ charging_power }}W, Max Power: {{ max_power }}W
-          - service: input_select.select_option
-            data:
-              entity_id: input_select.byd_akkusteuerung
-              option: BYD Akku Normalbetrieb
-
-      # Priority 2: Car is charging - maintain normal operation
+      # Priority 1: Car is charging - switch to pause mode
       - conditions:
           - condition: and
             conditions:
@@ -291,7 +262,7 @@ action:
             data:
               name: "Battery Control"
               message: >
-                Car is charging - ensuring normal operation.
+                Car is charging - switching to pause mode to prioritize car charging.
                 Car State: Connected ({{ car_connected }}) and Charging ({{ car_charging_state }}),
                 Car Power: {{ car_charging_power }}W,
                 Battery Power: {{ battery_power }}W,
@@ -302,9 +273,9 @@ action:
           - service: input_select.select_option
             data:
               entity_id: input_select.byd_akkusteuerung
-              option: BYD Akku Normalbetrieb
+              option: BYD Akku Pausieren
 
-      # Priority 3: Car is connected but not charging - prepare for charging
+      # Priority 2: Car is connected but not charging - prepare for charging
       - conditions:
           - condition: and
             conditions:
@@ -331,7 +302,7 @@ action:
               entity_id: input_select.byd_akkusteuerung
               option: BYD Akku Normalbetrieb
 
-      # Priority 4: High SOC (>95%) - switch to normal operation
+      # Priority 3: High SOC (>95%) - switch to normal operation
       - conditions:
           - condition: and
             conditions:
@@ -363,7 +334,7 @@ action:
               entity_id: input_select.byd_akkusteuerung
               option: BYD Akku Normalbetrieb
 
-      # Priority 5: Emergency charging needed (low SOC + high prices)
+      # Priority 4: Emergency charging needed (low SOC + high prices)
       - conditions:
           - condition: and
             conditions:
@@ -401,7 +372,7 @@ action:
               entity_id: input_select.byd_akkusteuerung
               option: BYD Akku schnell Laden
 
-      # Priority 6: High price period - pause battery
+      # Priority 5: High price period - pause battery
       - conditions:
           - condition: and
             conditions:
@@ -441,7 +412,7 @@ action:
               entity_id: input_select.byd_akkusteuerung
               option: BYD Akku Pausieren
 
-      # Priority 7: Optimal charging time - prepare for charging
+      # Priority 6: Optimal charging time - prepare for charging
       - conditions:
           - condition: and
             conditions:
